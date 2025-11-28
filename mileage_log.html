@@ -33,6 +33,26 @@
         <p class="text-sm mt-2 text-blue-600 font-medium" id="user-info">Authenticating...</p>
     </header>
 
+    <!-- Vehicle Selection Card -->
+    <div class="bg-white p-6 shadow-xl rounded-xl mb-8 border-t-4 border-purple-500">
+        <h2 class="text-xl font-semibold text-gray-800 mb-4">Select Vehicle</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label for="vehicleSelect" class="block text-sm font-medium text-gray-700">Active Vehicle for Logging/Summary</label>
+                <select id="vehicleSelect" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 p-2 border">
+                    <!-- Default vehicle options -->
+                    <option value="Sienna">Sienna</option>
+                    <option value="Murano">Murano</option>
+                </select>
+            </div>
+            <div class="flex items-end">
+                <p class="text-xs text-gray-500 italic">
+                    All data and summaries below relate to the selected vehicle.
+                </p>
+            </div>
+        </div>
+    </div>
+
     <!-- Global Odometer Readings Card -->
     <div id="odometer-card" class="bg-white p-6 shadow-xl rounded-xl mb-8 border-t-4 border-blue-500">
         <h2 class="text-xl font-semibold text-gray-800 mb-4">Annual Vehicle Readings (Required by CRA)</h2>
@@ -88,7 +108,7 @@
             </div>
 
             <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
-                Add Trip to Log
+                Add Trip to Log for <span id="currentVehicleName">Sienna</span>
             </button>
             <p id="trip-status" class="text-sm mt-3 text-center text-red-600"></p>
         </form>
@@ -97,7 +117,7 @@
     <!-- Log Summary and Trips List -->
     <div class="bg-white p-6 shadow-xl rounded-xl">
         <div class="flex justify-between items-center mb-4 border-b pb-2">
-            <h2 class="text-xl font-semibold text-gray-800">Your Mileage Records</h2>
+            <h2 class="text-xl font-semibold text-gray-800">Mileage Records for <span id="summaryVehicleName">Sienna</span></h2>
             <button id="exportBtn" class="bg-gray-200 hover:bg-gray-300 text-gray-800 text-sm font-semibold py-1.5 px-3 rounded-lg transition duration-150 ease-in-out">
                 Export CSV
             </button>
@@ -157,20 +177,46 @@
         onSnapshot, 
         deleteDoc,
         query, 
-        orderBy,
+        where, // <-- New import for filtering
+        // Removed: orderBy,
         getDoc,
         setLogLevel
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    // IMPORTANT: Use the global variables provided by the environment
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    // IMPORTANT: MANUAL CONFIGURATION FOR EXTERNAL HOSTING
+    // You MUST replace the placeholder values below with your actual Firebase project config.
+    // The initialAuthToken (which provides secure login) is not available outside the Canvas,
+    // so we will switch to permanent anonymous sign-in, which means your data will only
+    // be protected by the Firestore Security Rules on that specific project.
+    // 
+    // This is the configuration for the project where your data is currently stored:
+    const MANUAL_FIREBASE_CONFIG = {
+        apiKey: "YOUR_API_KEY_HERE",           // REPLACE THIS VALUE
+        authDomain: "YOUR_AUTH_DOMAIN_HERE", // REPLACE THIS VALUE
+        projectId: "YOUR_PROJECT_ID_HERE",   // REPLACE THIS VALUE
+        storageBucket: "YOUR_STORAGE_BUCKET_HERE", // REPLACE THIS VALUE
+        messagingSenderId: "YOUR_MESSAGING_SENDER_ID_HERE", // REPLACE THIS VALUE
+        appId: "YOUR_APP_ID_HERE"              // REPLACE THIS VALUE
+    };
+
+    // IMPORTANT: The following variables are used for compatibility within the Canvas environment.
+    // When running externally, they will fall back to the manual config.
+    const appId = typeof __app_id !== 'undefined' ? __app_id : MANUAL_FIREBASE_CONFIG.projectId;
     let firebaseConfig = null;
     try {
         firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        // If config is empty (running outside Canvas), use the manual config
+        if (Object.keys(firebaseConfig).length === 0 && MANUAL_FIREBASE_CONFIG.projectId !== "YOUR_PROJECT_ID_HERE") {
+             firebaseConfig = MANUAL_FIREBASE_CONFIG;
+        } else if (Object.keys(firebaseConfig).length === 0) {
+             firebaseConfig = {}; // Keep it empty if the manual config is also default
+        }
     } catch (e) {
-        console.error("Firebase config is invalid.", e);
+        console.error("Firebase config parsing error.", e);
+        firebaseConfig = {};
     }
-    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initialAuthToken : null;
+    // Note: The initialAuthToken is effectively ignored outside the Canvas and we will use signInAnonymously.
+    const initialAuthToken = null; 
 
     // --- Global Variables and Constants ---
     let db;
@@ -179,12 +225,13 @@
     let isAuthReady = false;
     const TRIP_COLLECTION = 'trips';
     const ODOMETER_COLLECTION = 'odometer';
-    const ODOMETER_DOC_ID = 'annual_readings';
+    
+    // Default to the first vehicle
+    let activeVehicleId = 'Sienna'; 
     
     // CRA Standard Mileage/Automobile Allowance Rate for 2024 (70 cents/km for first 5,000 km)
-    // Note: This is an estimated rate for the summary. Actual calculation uses two tiers.
     const CRA_STANDARD_RATE_FIRST_TIER = 0.70; 
-    let currentTrips = []; // Cache of the current trip data
+    let currentTrips = []; // Cache of the current trip data for the active vehicle
 
     // --- Utility Functions ---
 
@@ -224,6 +271,7 @@
                 await new Promise(resolve => setTimeout(resolve, delay));
                 delay *= 2;
             }
+            // Do not log the retry attempt
         }
     }
 
@@ -247,7 +295,7 @@
             // Set logging level for debugging (optional, but useful)
             setLogLevel('debug'); 
 
-            // Sign in the user
+            // Since we are likely running outside Canvas, use anonymous sign-in
             if (initialAuthToken) {
                 await signInWithCustomToken(auth, initialAuthToken);
             } else {
@@ -259,7 +307,7 @@
                 if (user) {
                     userId = user.uid;
                     isAuthReady = true;
-                    document.getElementById('user-info').textContent = `User ID: ${userId}`;
+                    document.getElementById('user-info').textContent = `User ID: ${userId} (Anonymous/External)`;
                     
                     // Once authenticated, start listening for data
                     setupDataListeners();
@@ -272,7 +320,7 @@
 
         } catch (error) {
             console.error("Firebase initialization or sign-in failed:", error);
-            document.getElementById('user-info').textContent = `Error: Authentication failed.`;
+            document.getElementById('user-info').textContent = `Error: Authentication failed. Check your Firebase config and security rules.`;
         }
     }
 
@@ -289,19 +337,19 @@
     }
 
     /**
-     * Gets the reference to the odometer document.
+     * Gets the reference to the odometer document for the active vehicle.
      * @returns {import('firebase/firestore').DocumentReference}
      */
-    function getOdometerDocRef() {
+    function getOdometerDocRef(vehicleId) {
         if (!db || !userId) return null;
-        // Path: /artifacts/{appId}/users/{userId}/odometer/annual_readings
-        return doc(db, 'artifacts', appId, 'users', userId, ODOMETER_COLLECTION, ODOMETER_DOC_ID);
+        // Path: /artifacts/{appId}/users/{userId}/odometer/{Vehicle_ID}
+        return doc(db, 'artifacts', appId, 'users', userId, ODOMETER_COLLECTION, vehicleId);
     }
 
     // --- Data Handlers (Read/Write) ---
 
     /**
-     * Saves the annual odometer readings to Firestore.
+     * Saves the annual odometer readings to Firestore for the active vehicle.
      */
     async function saveOdometerReadings() {
         const startOdo = parseFloat(document.getElementById('startOdo').value);
@@ -320,7 +368,7 @@
             return;
         }
 
-        const docRef = getOdometerDocRef();
+        const docRef = getOdometerDocRef(activeVehicleId);
         if (!docRef) return;
 
         try {
@@ -329,7 +377,7 @@
                 endOdo: endOdo,
                 lastUpdated: Date.now()
             }));
-            statusEl.textContent = 'Annual readings saved successfully!';
+            statusEl.textContent = `Annual readings for ${activeVehicleId} saved successfully!`;
             statusEl.className = 'text-sm mt-3 text-center text-green-600';
         } catch (e) {
             console.error("Error saving odometer readings:", e);
@@ -362,6 +410,7 @@
         if (!collectionRef) return;
 
         const newTrip = {
+            vehicleId: activeVehicleId, // <-- IMPORTANT: Tag the trip with the active vehicle
             date: new Date(tripDate).getTime(), // Store as timestamp for sorting
             distance: toFixed2(tripDistance),
             start: tripStart.trim(),
@@ -372,7 +421,7 @@
 
         try {
             await withRetry(() => addDoc(collectionRef, newTrip));
-            statusEl.textContent = 'Trip added successfully!';
+            statusEl.textContent = `Trip added successfully for ${activeVehicleId}!`;
             statusEl.className = 'text-sm mt-3 text-center text-green-600';
             form.reset();
             // Clear status after 3 seconds
@@ -404,40 +453,53 @@
      * Renders a single trip card element.
      * @param {Object} trip - The trip data.
      * @param {string} id - The Firestore document ID.
-     * @returns {HTMLElement}
+     * @returns {HTMLElement | Node}
      */
     function renderTripCard(trip, id) {
-        const div = document.createElement('div');
-        div.className = 'trip-card flex justify-between items-start bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200';
-        div.setAttribute('data-id', id);
-        
-        const details = `
-            <div class="flex-grow">
-                <p class="text-sm text-gray-400">${formatTimestampToDate(trip.date)}</p>
-                <p class="text-lg font-semibold text-blue-700">${trip.distance} km</p>
-                <p class="text-gray-700 mt-1">
-                    <span class="font-medium">${trip.start}</span> &rarr; <span class="font-medium">${trip.end}</span>
-                </p>
-                <p class="text-xs text-gray-500 mt-1">Purpose: ${trip.purpose}</p>
-            </div>
-        `;
-        
-        const deleteButton = document.createElement('button');
-        deleteButton.className = 'delete-btn text-red-500 hover:text-red-700 transition duration-150 p-2 rounded-full';
-        deleteButton.innerHTML = `
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
-                <path fill-rule="evenodd" d="M16.5 4.475a.75.75 0 0 1 .75.75V19.5a.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75V5.225a.75.75 0 0 1 .75-.75h9ZM10.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9ZM13.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9Z" clip-rule="evenodd" />
-                <path d="M12 2.25a.75.75 0 0 1 .75.75V5.25a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75Z" />
-            </svg>
-        `;
-        deleteButton.onclick = (e) => {
-            e.stopPropagation();
-            showDeleteModal(id);
-        };
+        try {
+            const div = document.createElement('div');
+            div.className = 'trip-card flex justify-between items-start bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200';
+            div.setAttribute('data-id', id);
+            
+            // CRITICAL CHECK: Ensure all fields needed for rendering are present before generating HTML
+            if (!trip.date || !trip.distance || !trip.start || !trip.end || !trip.purpose) {
+                console.warn("Skipping display for incomplete trip record:", id, trip);
+                // Return a valid, but empty, Node to prevent crash in the main loop
+                return document.createElement('div'); 
+            }
 
-        div.innerHTML = details;
-        div.appendChild(deleteButton);
-        return div;
+            const details = `
+                <div class="flex-grow">
+                    <p class="text-sm text-gray-400">${formatTimestampToDate(trip.date)}</p>
+                    <p class="text-lg font-semibold text-blue-700">${trip.distance} km</p>
+                    <p class="text-gray-700 mt-1">
+                        <span class="font-medium">${trip.start}</span> &rarr; <span class="font-medium">${trip.end}</span>
+                    </p>
+                    <p class="text-xs text-gray-500 mt-1">Purpose: ${trip.purpose}</p>
+                </div>
+            `;
+            
+            const deleteButton = document.createElement('button');
+            deleteButton.className = 'delete-btn text-red-500 hover:text-red-700 transition duration-150 p-2 rounded-full';
+            deleteButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
+                    <path fill-rule="evenodd" d="M16.5 4.475a.75.75 0 0 1 .75.75V19.5a.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75V5.225a.75.75 0 0 1 .75-.75h9ZM10.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9ZM13.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9Z" clip-rule="evenodd" />
+                    <path d="M12 2.25a.75.75 0 0 1 .75.75V5.25a.75.75 0 0 1-1.5 0V3a.75.75 0 0 1 .75-.75Z" />
+                </svg>
+            `;
+            deleteButton.onclick = (e) => {
+                e.stopPropagation();
+                showDeleteModal(id);
+            };
+
+            div.innerHTML = details;
+            div.appendChild(deleteButton);
+            return div;
+        } catch (e) {
+            console.error("Critical failure during trip card rendering for ID:", id, e);
+            // Return a valid empty element (a Node) to prevent the TypeError
+            return document.createElement('div');
+        }
     }
 
     /**
@@ -449,21 +511,39 @@
         const logArea = document.getElementById('log-area');
         logArea.innerHTML = ''; // Clear existing trips
         
-        const placeholder = document.getElementById('log-placeholder');
         if (trips.length === 0) {
-            logArea.appendChild(placeholder);
+            // DYNAMICALLY CREATE PLACEHOLDER
+            // We create this element fresh every time the list is empty.
+            // This prevents the "parameter 1 is not of type 'Node'" error which occurs
+            // when we try to append a 'null' element (because the original placeholder
+            // was deleted when we did logArea.innerHTML = '').
+            const p = document.createElement('p');
+            p.className = "text-center text-gray-500 italic";
+            p.id = "log-placeholder";
+            p.textContent = "Log is empty. Start by adding a trip!";
+            logArea.appendChild(p);
+
             document.getElementById('totalBusinessMileage').textContent = toFixed2(0.0);
             document.getElementById('totalDeduction').textContent = `$${toFixed2(0.0)}`;
             return;
         }
 
-        placeholder.remove(); // Hide placeholder if there are trips
-
         let totalMileage = 0;
+        // FIX: Sort the data using JavaScript in memory since Firestore orderBy was removed to avoid index error
+        trips.sort((a, b) => b.date - a.date);
+
         trips.forEach(trip => {
             const distance = parseFloat(trip.distance || 0);
             totalMileage += distance;
-            logArea.appendChild(renderTripCard(trip, trip.id));
+            const tripCard = renderTripCard(trip, trip.id);
+            
+            // CRITICAL FIX: Explicitly check that tripCard is a Node instance 
+            // This handles cases where renderTripCard might return an invalid object reference.
+            if (tripCard instanceof Node) { 
+                logArea.appendChild(tripCard);
+            } else {
+                 console.warn("Skipped appending invalid tripCard for ID:", trip.id);
+            }
         });
 
         // Update Summary
@@ -471,16 +551,57 @@
         const totalDeduction = totalMileage * CRA_STANDARD_RATE_FIRST_TIER;
         document.getElementById('totalDeduction').textContent = `$${toFixed2(totalDeduction)}`;
     }
-
+    
     /**
-     * Updates the Odometer fields.
+     * Updates the Odometer fields based on data for the currently active vehicle.
      * @param {Object} odometerData
      */
     function updateOdometerUI(odometerData) {
+        const startOdoEl = document.getElementById('startOdo');
+        const endOdoEl = document.getElementById('endOdo');
+        const statusEl = document.getElementById('odometer-status');
+
         if (odometerData) {
-            document.getElementById('startOdo').value = odometerData.startOdo || '';
-            document.getElementById('endOdo').value = odometerData.endOdo || '';
+            startOdoEl.value = odometerData.startOdo || '';
+            endOdoEl.value = odometerData.endOdo || '';
+            statusEl.textContent = `Readings for ${activeVehicleId} loaded.`;
+            statusEl.className = 'text-sm mt-3 text-center text-green-600';
+        } else {
+            startOdoEl.value = '';
+            endOdoEl.value = '';
+            statusEl.textContent = `No annual readings found for ${activeVehicleId}. Please enter them.`;
+            statusEl.className = 'text-sm mt-3 text-center text-blue-600';
         }
+    }
+    
+    /**
+     * Fetches and updates the annual odometer readings for the active vehicle.
+     */
+    async function fetchOdometerForActiveVehicle() {
+        if (!isAuthReady || !userId || !db) return;
+        
+        const docRef = getOdometerDocRef(activeVehicleId);
+        if (docRef) {
+            try {
+                const docSnap = await withRetry(() => getDoc(docRef));
+                if (docSnap.exists()) {
+                    updateOdometerUI(docSnap.data());
+                } else {
+                    updateOdometerUI(null);
+                }
+            } catch(e) {
+                console.error("Error fetching odometer data:", e);
+            }
+        }
+    }
+    
+    /**
+     * Updates the UI elements reflecting the active vehicle name.
+     */
+    function updateVehicleNameUI() {
+        const vehicleName = document.getElementById('vehicleSelect').options[document.getElementById('vehicleSelect').selectedIndex].text;
+        document.getElementById('currentVehicleName').textContent = vehicleName;
+        document.getElementById('summaryVehicleName').textContent = vehicleName;
     }
 
     /**
@@ -489,30 +610,39 @@
     function setupDataListeners() {
         if (!isAuthReady || !userId || !db) return;
 
-        // 1. Listen for Trip updates
-        // Note: Ordering by 'date' (timestamp of trip) ensures chronological order
-        const q = query(getTripCollectionRef(), orderBy('date', 'desc'));
+        // 1. Get initial Odometer readings
+        fetchOdometerForActiveVehicle();
+        
+        // 2. Listen for Trip updates, filtered by activeVehicleId
+        // FIX: Removed orderBy('date', 'desc') to avoid the composite index error.
+        // Sorting is now handled in updateTripLogUI via JavaScript.
+        const tripsCollectionRef = getTripCollectionRef();
+        const q = query(
+            tripsCollectionRef, 
+            where('vehicleId', '==', activeVehicleId) // <-- Filter by active vehicle
+        );
+
         onSnapshot(q, (snapshot) => {
             const trips = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
             updateTripLogUI(trips);
         }, (error) => {
-            console.error("Error fetching trips:", error);
+            // Note: Since we are catching the error here, it won't crash the app, but log it.
+            console.error("Error fetching filtered trips:", error); 
         });
-
-        // 2. Listen for Odometer updates
-        const docRef = getOdometerDocRef();
-        if (docRef) {
-            onSnapshot(docRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    updateOdometerUI(docSnap.data());
-                } else {
-                    updateOdometerUI({}); // Clear fields if doc doesn't exist
-                }
-            }, (error) => {
-                console.error("Error fetching odometer data:", error);
-            });
-        }
     }
+    
+    /**
+     * Handles the change event for the vehicle selector.
+     */
+    function handleVehicleChange() {
+        const newVehicleId = document.getElementById('vehicleSelect').value;
+        activeVehicleId = newVehicleId;
+        updateVehicleNameUI();
+        
+        // Re-run data listeners to switch context (Odometer and Trip List)
+        setupDataListeners();
+    }
+
 
     // --- Modal Logic ---
     const deleteModal = document.getElementById('deleteModal');
@@ -554,14 +684,16 @@
     function exportToCSV() {
         if (currentTrips.length === 0) {
             const statusEl = document.getElementById('trip-status');
-            statusEl.textContent = 'No trips to export.';
+            statusEl.textContent = 'No trips to export for this vehicle.';
             statusEl.className = 'text-sm mt-3 text-center text-red-600';
             setTimeout(() => statusEl.textContent = '', 3000);
             return;
         }
 
+        const vehicleName = document.getElementById('vehicleSelect').options[document.getElementById('vehicleSelect').selectedIndex].text;
+
         // CSV Header (Updated to Kilometers)
-        let csv = "Date,Distance (Kilometers),Start Location,End Location,Business Purpose,Total Annual Business Kilometers (YTD)\n";
+        let csv = `Vehicle,Date,Distance (Kilometers),Start Location,End Location,Business Purpose,Total Annual Business Kilometers (YTD)\n`;
         
         // Calculate YTD total mileage
         let totalMileage = 0;
@@ -573,6 +705,7 @@
         currentTrips.forEach(trip => {
             const date = formatTimestampToDate(trip.date);
             const row = [
+                vehicleName, // Added Vehicle Name
                 date,
                 trip.distance,
                 `"${trip.start.replace(/"/g, '""')}"`, // Handle quotes in text fields
@@ -588,7 +721,7 @@
         const link = document.createElement('a');
         const url = URL.createObjectURL(blob);
         link.setAttribute('href', url);
-        link.setAttribute('download', `CRA_Mileage_Log_Export_${new Date().toISOString().split('T')[0]}.csv`);
+        link.setAttribute('download', `CRA_Mileage_Log_Export_${activeVehicleId}_${new Date().toISOString().split('T')[0]}.csv`);
         link.style.visibility = 'hidden';
         document.body.appendChild(link);
         link.click();
@@ -600,10 +733,16 @@
         // Set today's date as default for convenience
         document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
         
+        // Set up initial vehicle name display
+        updateVehicleNameUI();
+
         // Set up form submission and button clicks
         document.getElementById('trip-form').addEventListener('submit', addTrip);
         document.getElementById('saveOdoBtn').addEventListener('click', saveOdometerReadings);
         document.getElementById('exportBtn').addEventListener('click', exportToCSV);
+        
+        // Vehicle selector change listener is now added here (once)
+        document.getElementById('vehicleSelect').addEventListener('change', handleVehicleChange);
 
         // Start the whole process
         initializeFirebase();
