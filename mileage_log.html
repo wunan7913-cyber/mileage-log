@@ -93,9 +93,9 @@
         </div>
 
         <!-- New Trip Input Form -->
-        <div class="bg-white p-6 shadow-xl rounded-xl mb-8">
+        <div class="bg-white p-6 shadow-xl rounded-xl mb-8" id="input-card">
             <!-- RE-ADDED currentVehicleName SPAN HERE -->
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">Log Trip for <span id="currentVehicleName" class="text-blue-600">Sienna</span></h2>
+            <h2 class="text-xl font-semibold text-gray-800 mb-4"><span id="formTitle">Log Trip</span> for <span id="currentVehicleName" class="text-blue-600">Sienna</span></h2>
             <form id="trip-form" class="space-y-4">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <!-- Date -->
@@ -113,14 +113,19 @@
                 <!-- Start Location -->
                 <div>
                     <label for="tripStart" class="block text-sm font-medium text-gray-700">Start Location / From (Specific Address/Client)</label>
-                    <input type="text" id="tripStart" value="33 Panatella Way NW, Calgary T3K 6C4" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
+                    <input type="text" id="tripStart" list="location-suggestions" value="33 Panatella Way NW, Calgary T3K 6C4" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border" autocomplete="off">
                 </div>
 
                 <!-- End Location -->
                 <div>
                     <label for="tripEnd" class="block text-sm font-medium text-gray-700">End Location / To (Specific Address/Client)</label>
-                    <input type="text" id="tripEnd" placeholder="e.g., Client 'Acme Co.' Meeting" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
+                    <input type="text" id="tripEnd" list="location-suggestions" placeholder="e.g., Client 'Acme Co.' Meeting" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border" autocomplete="off">
                 </div>
+                
+                <!-- Datalist for Autocomplete Suggestions -->
+                <datalist id="location-suggestions">
+                    <!-- Options will be populated dynamically -->
+                </datalist>
 
                 <!-- Purpose -->
                 <div>
@@ -129,9 +134,14 @@
                 </div>
 
                 <div class="flex flex-col sm:flex-row gap-3 pt-2">
-                    <button type="submit" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
+                    <button type="submit" id="submitBtn" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
                         Log One Way
                     </button>
+                    <!-- Cancel Edit Button (Hidden by default) -->
+                    <button type="button" id="cancelEditBtn" class="hidden flex-1 bg-gray-500 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
+                        Cancel Edit
+                    </button>
+                    
                     <button type="button" id="roundTripBtn" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md flex items-center justify-center">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-2">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
@@ -207,6 +217,7 @@
         collection, 
         setDoc, 
         addDoc, 
+        updateDoc, // <-- Added updateDoc import
         onSnapshot, 
         deleteDoc,
         query, 
@@ -249,6 +260,7 @@
     let userId = null;
     let unsubscribeTrips = null;
     let unsubscribeOdo = null;
+    let editingTripId = null; // New variable to track edit state
     const TRIP_COLLECTION = 'trips';
     const ODOMETER_COLLECTION = 'odometer';
     
@@ -462,6 +474,16 @@
     }
 
     /**
+     * Helper to update a trip object in Firestore.
+     */
+    async function updateTripInFirestore(docId, tripData) {
+        const collectionRef = getTripCollectionRef();
+        if (!collectionRef) return;
+        const tripDoc = doc(collectionRef, docId);
+        await withRetry(() => updateDoc(tripDoc, tripData));
+    }
+
+    /**
      * Helper to extract and validate trip data from form.
      * Returns null if invalid, otherwise returns data object.
      */
@@ -502,7 +524,7 @@
         setTimeout(() => statusEl.textContent = '', 3000); 
     }
 
-    async function addTrip(event) {
+    async function handleFormSubmit(event) {
         event.preventDefault();
         const statusEl = document.getElementById('trip-status');
         const data = extractTripDataFromForm();
@@ -513,7 +535,7 @@
             return;
         }
 
-        const newTrip = {
+        const tripData = {
             vehicleId: data.vehicleId, 
             date: new Date(data.dateStr).getTime(), 
             distance: data.distance,
@@ -524,11 +546,19 @@
         };
 
         try {
-            await writeTripToFirestore(newTrip);
-            resetForm(statusEl, `Trip added successfully for ${activeVehicleId}!`);
+            if (editingTripId) {
+                // Update existing trip
+                await updateTripInFirestore(editingTripId, tripData);
+                resetForm(statusEl, `Trip updated successfully!`);
+                cancelEditMode(); // Exit edit mode
+            } else {
+                // Create new trip
+                await writeTripToFirestore(tripData);
+                resetForm(statusEl, `Trip added successfully for ${activeVehicleId}!`);
+            }
         } catch (e) {
-            console.error("Error adding document:", e);
-            statusEl.textContent = 'Error adding trip. Check console.';
+            console.error("Error processing document:", e);
+            statusEl.textContent = 'Error processing trip. Check console.';
             statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
         }
     }
@@ -536,6 +566,11 @@
     async function addRoundTrip(event) {
         // Prevent default if it was triggered by a form submit (though it's type=button)
         if (event) event.preventDefault();
+        
+        if (editingTripId) {
+            alert("Please cancel edit mode before logging a round trip.");
+            return;
+        }
         
         const statusEl = document.getElementById('trip-status');
         const data = extractTripDataFromForm();
@@ -567,7 +602,7 @@
             distance: data.distance,
             start: data.end, // Swap start
             end: data.start, // Swap end
-            purpose: data.purpose + " (Return)", // Optional: Add suffix or keep same? Usually keep same is fine, but return implies logic. Let's keep same to match user intent of just logging the return.
+            purpose: data.purpose,
             timestamp: timestamp + 60000 // Add 1 minute to return trip so it appears 'after' if sorted by creation
         };
 
@@ -584,12 +619,89 @@
     }
 
     async function deleteTrip(docId) {
+        // If user deletes the trip currently being edited, cancel edit mode
+        if (editingTripId === docId) {
+            cancelEditMode();
+        }
         const docRef = doc(getTripCollectionRef(), docId);
         try {
             await withRetry(() => deleteDoc(docRef));
         } catch (e) {
             console.error("Error deleting document:", e);
         }
+    }
+    
+    // --- Edit Mode Logic ---
+    
+    function startEditTrip(id) {
+        const tripToEdit = currentTrips.find(t => t.id === id);
+        if (!tripToEdit) return;
+        
+        editingTripId = id;
+        
+        // Populate form
+        document.getElementById('tripDate').value = formatTimestampToDate(tripToEdit.date);
+        document.getElementById('tripDistance').value = tripToEdit.distance;
+        document.getElementById('tripStart').value = tripToEdit.start;
+        document.getElementById('tripEnd').value = tripToEdit.end;
+        document.getElementById('tripPurpose').value = tripToEdit.purpose;
+        
+        // Update UI State
+        document.getElementById('formTitle').textContent = "Edit Trip";
+        const submitBtn = document.getElementById('submitBtn');
+        submitBtn.textContent = "Update Trip";
+        submitBtn.classList.remove('bg-green-600', 'hover:bg-green-700');
+        submitBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+        
+        document.getElementById('cancelEditBtn').classList.remove('hidden');
+        document.getElementById('roundTripBtn').classList.add('hidden'); // Hide round trip while editing
+        
+        // Scroll to form
+        document.getElementById('input-card').scrollIntoView({ behavior: 'smooth' });
+    }
+    
+    function cancelEditMode() {
+        editingTripId = null;
+        document.getElementById('trip-form').reset();
+        
+        // Reset defaults
+        document.getElementById('tripStart').value = "33 Panatella Way NW, Calgary T3K 6C4";
+        document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
+        
+        // Reset UI State
+        document.getElementById('formTitle').textContent = "Log Trip";
+        const submitBtn = document.getElementById('submitBtn');
+        submitBtn.textContent = "Log One Way";
+        submitBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+        submitBtn.classList.add('bg-green-600', 'hover:bg-green-700');
+        
+        document.getElementById('cancelEditBtn').classList.add('hidden');
+        document.getElementById('roundTripBtn').classList.remove('hidden');
+    }
+
+    // --- Address Suggestions Logic ---
+
+    function updateAddressSuggestions(trips) {
+        const locations = new Set();
+        // Add default
+        locations.add("33 Panatella Way NW, Calgary T3K 6C4");
+        
+        trips.forEach(t => {
+            if(t.start) locations.add(t.start);
+            if(t.end) locations.add(t.end);
+        });
+
+        const dataList = document.getElementById('location-suggestions');
+        if (!dataList) return;
+        
+        dataList.innerHTML = '';
+        
+        // Sort for better UX
+        Array.from(locations).sort().forEach(loc => {
+            const option = document.createElement('option');
+            option.value = loc;
+            dataList.appendChild(option);
+        });
     }
 
     // --- UI Rendering ---
@@ -616,8 +728,25 @@
                 </div>
             `;
             
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'flex space-x-2';
+            
+            // Edit Button
+            const editButton = document.createElement('button');
+            editButton.className = 'text-blue-500 hover:text-blue-700 transition duration-150 p-2 rounded-full';
+            editButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+                </svg>
+            `;
+            editButton.onclick = (e) => {
+                e.stopPropagation();
+                startEditTrip(id);
+            };
+            
+            // Delete Button
             const deleteButton = document.createElement('button');
-            deleteButton.className = 'delete-btn text-red-500 hover:text-red-700 transition duration-150 p-2 rounded-full';
+            deleteButton.className = 'text-red-500 hover:text-red-700 transition duration-150 p-2 rounded-full';
             deleteButton.innerHTML = `
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5">
                     <path fill-rule="evenodd" d="M16.5 4.475a.75.75 0 0 1 .75.75V19.5a.75.75 0 0 1-.75.75h-9a.75.75 0 0 1-.75-.75V5.225a.75.75 0 0 1 .75-.75h9ZM10.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9ZM13.5 9a.75.75 0 0 0-1.5 0v8.25a.75.75 0 0 0 1.5 0V9Z" clip-rule="evenodd" />
@@ -629,8 +758,11 @@
                 showDeleteModal(id);
             };
 
+            actionsDiv.appendChild(editButton);
+            actionsDiv.appendChild(deleteButton);
+
             div.innerHTML = details;
-            div.appendChild(deleteButton);
+            div.appendChild(actionsDiv);
             return div;
         } catch (e) {
             return document.createElement('div');
@@ -639,6 +771,10 @@
 
     function updateTripLogUI(trips) {
         currentTrips = trips;
+        
+        // --- NEW: Update Address Suggestions ---
+        updateAddressSuggestions(trips);
+        
         const logArea = document.getElementById('log-area');
         logArea.innerHTML = ''; 
         
@@ -838,8 +974,12 @@
         }
 
         const tripForm = document.getElementById('trip-form');
-        if (tripForm) tripForm.addEventListener('submit', addTrip);
+        if (tripForm) tripForm.addEventListener('submit', handleFormSubmit); // Changed to handleFormSubmit
         
+        // Listener for Cancel Edit
+        const cancelEditBtn = document.getElementById('cancelEditBtn');
+        if (cancelEditBtn) cancelEditBtn.addEventListener('click', cancelEditMode);
+
         // NEW LISTENER FOR ROUND TRIP BUTTON
         const roundTripBtn = document.getElementById('roundTripBtn');
         if (roundTripBtn) roundTripBtn.addEventListener('click', addRoundTrip);
