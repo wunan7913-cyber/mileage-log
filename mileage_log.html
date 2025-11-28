@@ -92,7 +92,7 @@
             <!-- Start Location -->
             <div>
                 <label for="tripStart" class="block text-sm font-medium text-gray-700">Start Location / From (Specific Address/Client)</label>
-                <input type="text" id="tripStart" placeholder="e.g., Home Office (Start of Day)" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
+                <input type="text" id="tripStart" value="33 Panatella Way NW, Calgary T3K 6C4" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
             </div>
 
             <!-- End Location -->
@@ -352,20 +352,34 @@
      * Saves the annual odometer readings to Firestore for the active vehicle.
      */
     async function saveOdometerReadings() {
-        const startOdo = parseFloat(document.getElementById('startOdo').value);
-        const endOdo = parseFloat(document.getElementById('endOdo').value);
+        const startOdoVal = document.getElementById('startOdo').value;
+        const endOdoVal = document.getElementById('endOdo').value;
+        
+        const startOdo = parseFloat(startOdoVal);
+        // Treat empty string as null, otherwise parse float
+        const endOdo = endOdoVal.trim() === '' ? null : parseFloat(endOdoVal);
+        
         const statusEl = document.getElementById('odometer-status');
 
-        if (isNaN(startOdo) || isNaN(endOdo) || startOdo < 0 || endOdo < 0) {
-            statusEl.textContent = 'Please enter valid odometer readings.';
+        // Validation: Start Odo is required.
+        if (isNaN(startOdo) || startOdo < 0) {
+            statusEl.textContent = 'Please enter a valid Start of Year odometer reading.';
             statusEl.className = 'text-sm mt-3 text-center text-red-600';
             return;
         }
 
-        if (endOdo < startOdo) {
-             statusEl.textContent = 'End of year reading cannot be less than start of year reading.';
-            statusEl.className = 'text-sm mt-3 text-center text-red-600';
-            return;
+        // Validation: End Odo is optional, but if present, must be valid and >= Start Odo
+        if (endOdo !== null) {
+            if (isNaN(endOdo) || endOdo < 0) {
+                statusEl.textContent = 'Please enter a valid End of Year reading (or leave blank).';
+                statusEl.className = 'text-sm mt-3 text-center text-red-600';
+                return;
+            }
+            if (endOdo < startOdo) {
+                statusEl.textContent = 'End of year reading cannot be less than start of year reading.';
+                statusEl.className = 'text-sm mt-3 text-center text-red-600';
+                return;
+            }
         }
 
         const docRef = getOdometerDocRef(activeVehicleId);
