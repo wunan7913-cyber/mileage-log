@@ -293,6 +293,18 @@
     }
 
     /**
+     * Gets the current date in Mountain Time (Calgary) as YYYY-MM-DD.
+     */
+    function getTodayInMST() {
+        return new Date().toLocaleDateString('en-CA', {
+            timeZone: 'America/Edmonton',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+    }
+
+    /**
      * Retries a function with exponential backoff.
      */
     async function withRetry(fn, maxRetries = 5, delay = 1000) {
@@ -516,8 +528,8 @@
         document.getElementById('trip-form').reset();
         // Restore default address after reset
         document.getElementById('tripStart').value = "33 Panatella Way NW, Calgary T3K 6C4";
-        // Restore default date
-        document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
+        // Restore default date (MST)
+        document.getElementById('tripDate').value = getTodayInMST();
         
         statusEl.textContent = successMessage;
         statusEl.className = 'text-sm mt-3 text-center text-green-600 font-medium h-5';
@@ -666,7 +678,7 @@
         
         // Reset defaults
         document.getElementById('tripStart').value = "33 Panatella Way NW, Calgary T3K 6C4";
-        document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
+        document.getElementById('tripDate').value = getTodayInMST();
         
         // Reset UI State
         document.getElementById('formTitle').textContent = "Log Trip";
@@ -965,7 +977,7 @@
 
     // --- Initialization ---
     document.addEventListener('DOMContentLoaded', () => {
-        document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
+        document.getElementById('tripDate').value = getTodayInMST();
         
         // Safety check before running UI updates that depend on DOM
         if (document.getElementById('vehicleSelect')) {
