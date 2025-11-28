@@ -94,7 +94,8 @@
 
         <!-- New Trip Input Form -->
         <div class="bg-white p-6 shadow-xl rounded-xl mb-8">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">Log a New Business Trip (Requires Manual Distance Entry)</h2>
+            <!-- RE-ADDED currentVehicleName SPAN HERE -->
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Log Trip for <span id="currentVehicleName" class="text-blue-600">Sienna</span></h2>
             <form id="trip-form" class="space-y-4">
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <!-- Date -->
@@ -127,10 +128,18 @@
                     <input type="text" id="tripPurpose" placeholder="e.g., Sales presentation & contract negotiation" required class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border">
                 </div>
 
-                <button type="submit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
-                    Add Trip to Log for <span id="currentVehicleName">Sienna</span>
-                </button>
-                <p id="trip-status" class="text-sm mt-3 text-center text-red-600"></p>
+                <div class="flex flex-col sm:flex-row gap-3 pt-2">
+                    <button type="submit" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md">
+                        Log One Way
+                    </button>
+                    <button type="button" id="roundTripBtn" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-md flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5 mr-2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21 3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+                        </svg>
+                        Log Round Trip (x2)
+                    </button>
+                </div>
+                <p id="trip-status" class="text-sm mt-3 text-center text-gray-600 font-medium h-5"></p>
             </form>
         </div>
 
@@ -187,7 +196,7 @@
         getAuth, 
         signInAnonymously, 
         signInWithPopup, 
-        signInWithCustomToken, // <-- ADDED THIS IMPORT
+        signInWithCustomToken, 
         GoogleAuthProvider,
         signOut,
         onAuthStateChanged 
@@ -346,7 +355,7 @@
             console.error("Login failed:", error);
             const errorDiv = document.getElementById('auth-status-msg');
             
-            // Helpful error handling for unauthorized domains
+            // Helpful error handling
             if (error.code === 'auth/unauthorized-domain') {
                 const domain = window.location.hostname;
                 errorDiv.innerHTML = `
@@ -357,6 +366,16 @@
                         <p class="mb-1">2. Navigate to <strong>Authentication</strong> > <strong>Settings</strong> > <strong>Authorized domains</strong></p>
                         <p class="mb-1">3. Click "Add domain" and paste this:</p>
                         <code class="block bg-red-50 p-2 mt-1 rounded border border-red-200 select-all font-mono font-bold">${domain}</code>
+                    </div>
+                `;
+            } else if (error.code === 'auth/operation-not-allowed') {
+                 errorDiv.innerHTML = `
+                    <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative text-left text-sm mt-3">
+                        <strong class="font-bold">Configuration Error:</strong>
+                        <p class="mb-2">Google Sign-In is disabled.</p>
+                        <p class="mb-1">1. Go to <a href="https://console.firebase.google.com/" target="_blank" class="underline font-bold">Firebase Console</a></p>
+                        <p class="mb-1">2. Navigate to <strong>Authentication</strong> > <strong>Sign-in method</strong></p>
+                        <p class="mb-1">3. Click <strong>Google</strong>, toggle <strong>Enable</strong>, and Save.</p>
                     </div>
                 `;
             } else if (error.code === 'auth/popup-closed-by-user') {
@@ -433,49 +452,134 @@
         }
     }
 
-    async function addTrip(event) {
-        event.preventDefault();
-        
-        const form = event.target;
+    /**
+     * Helper to write a trip object to Firestore.
+     */
+    async function writeTripToFirestore(tripData) {
+        const collectionRef = getTripCollectionRef();
+        if (!collectionRef) return;
+        await withRetry(() => addDoc(collectionRef, tripData));
+    }
+
+    /**
+     * Helper to extract and validate trip data from form.
+     * Returns null if invalid, otherwise returns data object.
+     */
+    function extractTripDataFromForm() {
         const tripDate = document.getElementById('tripDate').value;
-        const tripDistance = parseFloat(document.getElementById('tripDistance').value);
+        const tripDistanceVal = document.getElementById('tripDistance').value;
         const tripStart = document.getElementById('tripStart').value;
         const tripEnd = document.getElementById('tripEnd').value;
         const tripPurpose = document.getElementById('tripPurpose').value;
-        const statusEl = document.getElementById('trip-status');
+        const tripDistance = parseFloat(tripDistanceVal);
 
         if (!tripDate || isNaN(tripDistance) || tripDistance <= 0 || !tripStart || !tripEnd || !tripPurpose) {
-            statusEl.textContent = 'Please fill out all required fields with valid data.';
-            statusEl.className = 'text-sm mt-3 text-center text-red-600';
-            return;
+            return null;
         }
 
-        const collectionRef = getTripCollectionRef();
-        if (!collectionRef) return;
-
-        const newTrip = {
+        return {
             vehicleId: activeVehicleId, 
-            date: new Date(tripDate).getTime(), 
+            dateStr: tripDate, // Keep raw string for date object creation
             distance: toFixed2(tripDistance),
             start: tripStart.trim(),
             end: tripEnd.trim(),
-            purpose: tripPurpose.trim(),
+            purpose: tripPurpose.trim()
+        };
+    }
+
+    /**
+     * Resets form and status.
+     */
+    function resetForm(statusEl, successMessage) {
+        document.getElementById('trip-form').reset();
+        // Restore default address after reset
+        document.getElementById('tripStart').value = "33 Panatella Way NW, Calgary T3K 6C4";
+        // Restore default date
+        document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
+        
+        statusEl.textContent = successMessage;
+        statusEl.className = 'text-sm mt-3 text-center text-green-600 font-medium h-5';
+        setTimeout(() => statusEl.textContent = '', 3000); 
+    }
+
+    async function addTrip(event) {
+        event.preventDefault();
+        const statusEl = document.getElementById('trip-status');
+        const data = extractTripDataFromForm();
+
+        if (!data) {
+            statusEl.textContent = 'Please fill out all required fields with valid data.';
+            statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
+            return;
+        }
+
+        const newTrip = {
+            vehicleId: data.vehicleId, 
+            date: new Date(data.dateStr).getTime(), 
+            distance: data.distance,
+            start: data.start,
+            end: data.end,
+            purpose: data.purpose,
             timestamp: Date.now()
         };
 
         try {
-            await withRetry(() => addDoc(collectionRef, newTrip));
-            statusEl.textContent = `Trip added successfully for ${activeVehicleId}!`;
-            statusEl.className = 'text-sm mt-3 text-center text-green-600';
-            form.reset();
-            // Restore default address after reset
-            document.getElementById('tripStart').value = "33 Panatella Way NW, Calgary T3K 6C4";
-            
-            setTimeout(() => statusEl.textContent = '', 3000); 
+            await writeTripToFirestore(newTrip);
+            resetForm(statusEl, `Trip added successfully for ${activeVehicleId}!`);
         } catch (e) {
             console.error("Error adding document:", e);
             statusEl.textContent = 'Error adding trip. Check console.';
-            statusEl.className = 'text-sm mt-3 text-center text-red-600';
+            statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
+        }
+    }
+
+    async function addRoundTrip(event) {
+        // Prevent default if it was triggered by a form submit (though it's type=button)
+        if (event) event.preventDefault();
+        
+        const statusEl = document.getElementById('trip-status');
+        const data = extractTripDataFromForm();
+
+        if (!data) {
+            statusEl.textContent = 'Please fill out all required fields with valid data.';
+            statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
+            return;
+        }
+
+        const timestamp = Date.now();
+
+        // Trip 1: Start -> End
+        const trip1 = {
+            vehicleId: data.vehicleId, 
+            date: new Date(data.dateStr).getTime(), 
+            distance: data.distance,
+            start: data.start,
+            end: data.end,
+            purpose: data.purpose,
+            timestamp: timestamp // Original time
+        };
+
+        // Trip 2: End -> Start (Return)
+        const trip2 = {
+            vehicleId: data.vehicleId, 
+            // We use same date. 
+            date: new Date(data.dateStr).getTime(), 
+            distance: data.distance,
+            start: data.end, // Swap start
+            end: data.start, // Swap end
+            purpose: data.purpose + " (Return)", // Optional: Add suffix or keep same? Usually keep same is fine, but return implies logic. Let's keep same to match user intent of just logging the return.
+            timestamp: timestamp + 60000 // Add 1 minute to return trip so it appears 'after' if sorted by creation
+        };
+
+        try {
+            // Save both
+            await writeTripToFirestore(trip1);
+            await writeTripToFirestore(trip2);
+            resetForm(statusEl, `Round trip (2 entries) added successfully!`);
+        } catch (e) {
+            console.error("Error adding round trip:", e);
+            statusEl.textContent = 'Error adding trips. Check console.';
+            statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
         }
     }
 
@@ -616,8 +720,17 @@
     
     function updateVehicleNameUI() {
         const vehicleName = document.getElementById('vehicleSelect').options[document.getElementById('vehicleSelect').selectedIndex].text;
-        document.getElementById('currentVehicleName').textContent = vehicleName;
-        document.getElementById('summaryVehicleName').textContent = vehicleName;
+        
+        // Safe update with null check
+        const currentVehicleNameEl = document.getElementById('currentVehicleName');
+        if (currentVehicleNameEl) {
+            currentVehicleNameEl.textContent = vehicleName;
+        }
+        
+        const summaryVehicleNameEl = document.getElementById('summaryVehicleName');
+        if (summaryVehicleNameEl) {
+            summaryVehicleNameEl.textContent = vehicleName;
+        }
     }
 
     function setupDataListeners() {
@@ -679,7 +792,7 @@
         if (currentTrips.length === 0) {
             const statusEl = document.getElementById('trip-status');
             statusEl.textContent = 'No trips to export for this vehicle.';
-            statusEl.className = 'text-sm mt-3 text-center text-red-600';
+            statusEl.className = 'text-sm mt-3 text-center text-red-600 font-medium h-5';
             setTimeout(() => statusEl.textContent = '', 3000);
             return;
         }
@@ -717,16 +830,32 @@
     // --- Initialization ---
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('tripDate').value = formatTimestampToDate(Date.now());
-        updateVehicleNameUI();
+        
+        // Safety check before running UI updates that depend on DOM
+        if (document.getElementById('vehicleSelect')) {
+            updateVehicleNameUI();
+            document.getElementById('vehicleSelect').addEventListener('change', handleVehicleChange);
+        }
 
-        document.getElementById('trip-form').addEventListener('submit', addTrip);
-        document.getElementById('saveOdoBtn').addEventListener('click', saveOdometerReadings);
-        document.getElementById('exportBtn').addEventListener('click', exportToCSV);
-        document.getElementById('vehicleSelect').addEventListener('change', handleVehicleChange);
+        const tripForm = document.getElementById('trip-form');
+        if (tripForm) tripForm.addEventListener('submit', addTrip);
+        
+        // NEW LISTENER FOR ROUND TRIP BUTTON
+        const roundTripBtn = document.getElementById('roundTripBtn');
+        if (roundTripBtn) roundTripBtn.addEventListener('click', addRoundTrip);
+        
+        const saveOdoBtn = document.getElementById('saveOdoBtn');
+        if (saveOdoBtn) saveOdoBtn.addEventListener('click', saveOdometerReadings);
+        
+        const exportBtn = document.getElementById('exportBtn');
+        if (exportBtn) exportBtn.addEventListener('click', exportToCSV);
         
         // Auth Buttons
-        document.getElementById('googleSignInBtn').addEventListener('click', window.loginWithGoogle);
-        document.getElementById('signOutBtn').addEventListener('click', window.logout);
+        const googleBtn = document.getElementById('googleSignInBtn');
+        if (googleBtn) googleBtn.addEventListener('click', window.loginWithGoogle);
+        
+        const signOutBtn = document.getElementById('signOutBtn');
+        if (signOutBtn) signOutBtn.addEventListener('click', window.logout);
 
         initializeFirebase();
     });
