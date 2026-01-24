@@ -55,7 +55,33 @@
 
         <!-- Vehicle Selection Card -->
         <div class="bg-white p-6 shadow-xl rounded-xl mb-8 border-t-4 border-purple-500">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">Select Vehicle</h2>
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">Select Log Session</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="vehicleSelect" class="block text-sm font-medium text-gray-700">Vehicle</label>
+                    <select id="vehicleSelect" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 p-2 border">
+                        <!-- Default vehicle options -->
+                        <option value="Sienna">Sienna</option>
+                        <option value="Murano">Murano</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="yearSelect" class="block text-sm font-medium text-gray-700">Tax Year</label>
+                    <select id="yearSelect" class="mt-1 block w-full rounded-lg border-gray-300 shadow-sm focus:border-purple-500 focus:ring-purple-500 p-2 border">
+                        <!-- Options populated by JS -->
+                    </select>
+                </div>
+            </div>
+            <div class="flex items-end mt-2">
+                <p class="text-xs text-gray-500 italic">
+                    Showing data for the selected vehicle and tax year.
+                </p>
+            </div>
+        </div>
+
+        <!-- Global Odometer Readings Card -->
+        <div id="odometer-card" class="bg-white p-6 shadow-xl rounded-xl mb-8 border-t-4 border-blue-500">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4"><span id="odoYearLabel"></span> Vehicle Readings (Required by CRA)</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label for="vehicleSelect" class="block text-sm font-medium text-gray-700">Active Vehicle for Logging/Summary</label>
@@ -266,6 +292,7 @@
     
     // Default to the first vehicle
     let activeVehicleId = 'Sienna'; 
+    let activeYear = new Date().getFullYear(); // Default to current year (e.g. 2026)
     
     // CRA Standard Mileage/Automobile Allowance Rate for 2024 (70 cents/km for first 5,000 km)
     const CRA_STANDARD_RATE_FIRST_TIER = 0.70; 
@@ -427,7 +454,9 @@
 
     function getOdometerDocRef(vehicleId) {
         if (!db || !userId) return null;
-        return doc(db, 'artifacts', appId, 'users', userId, ODOMETER_COLLECTION, vehicleId);
+        // Key concept: Store odometer readings by "Vehicle_Year" ID (e.g., "Sienna_2026")
+        const docId = `${vehicleId}_${activeYear}`;
+        return doc(db, 'artifacts', appId, 'users', userId, ODOMETER_COLLECTION, docId);
     }
 
     // --- Data Handlers ---
@@ -445,19 +474,7 @@
             return;
         }
 
-        if (endOdo !== null) {
-            if (isNaN(endOdo) || endOdo < 0) {
-                statusEl.textContent = 'Please enter a valid End of Year reading (or leave blank).';
-                statusEl.className = 'text-sm mt-3 text-center text-red-600';
-                return;
-            }
-            if (endOdo < startOdo) {
-                statusEl.textContent = 'End of year reading cannot be less than start of year reading.';
-                statusEl.className = 'text-sm mt-3 text-center text-red-600';
-                return;
-            }
-        }
-
+        // Use the new year-specific ref
         const docRef = getOdometerDocRef(activeVehicleId);
         if (!docRef) return;
 
@@ -465,9 +482,10 @@
             await withRetry(() => setDoc(docRef, { 
                 startOdo: startOdo, 
                 endOdo: endOdo,
+                year: activeYear, // Store year metadata
                 lastUpdated: Date.now()
             }));
-            statusEl.textContent = `Annual readings for ${activeVehicleId} saved successfully!`;
+            statusEl.textContent = `Readings for ${activeVehicleId} (${activeYear}) saved!`;
             statusEl.className = 'text-sm mt-3 text-center text-green-600';
         } catch (e) {
             console.error("Error saving odometer readings:", e);
@@ -509,6 +527,14 @@
 
         if (!tripDate || isNaN(tripDistance) || tripDistance <= 0 || !tripStart || !tripEnd || !tripPurpose) {
             return null;
+        }
+
+        // Validate that the trip date matches the currently selected Tax Year
+        const tripYear = new Date(tripDate).getFullYear();
+        if (tripYear !== parseInt(activeYear)) {
+            if(!confirm(`The trip date (${tripDate}) is in ${tripYear}, but you are currently viewing the ${activeYear} log.\n\nDo you want to proceed? (It will be saved but won't appear in the current list until you switch years)`)) {
+                return null;
+            }
         }
 
         return {
@@ -824,15 +850,18 @@
         const endOdoEl = document.getElementById('endOdo');
         const statusEl = document.getElementById('odometer-status');
 
+        // Update the header label
+        document.getElementById('odoYearLabel').textContent = `${activeYear}`;
+
         if (odometerData) {
             startOdoEl.value = odometerData.startOdo || '';
             endOdoEl.value = odometerData.endOdo || '';
-            statusEl.textContent = `Readings for ${activeVehicleId} loaded.`;
+            statusEl.textContent = `Readings for ${activeVehicleId} (${activeYear}) loaded.`;
             statusEl.className = 'text-sm mt-3 text-center text-green-600';
         } else {
             startOdoEl.value = '';
             endOdoEl.value = '';
-            statusEl.textContent = `No annual readings found for ${activeVehicleId}. Please enter them.`;
+            statusEl.textContent = `No readings found for ${activeYear}. Please enter them.`;
             statusEl.className = 'text-sm mt-3 text-center text-blue-600';
         }
     }
@@ -872,23 +901,25 @@
         // Safe update with null check
         const currentVehicleNameEl = document.getElementById('currentVehicleName');
         if (currentVehicleNameEl) {
-            currentVehicleNameEl.textContent = vehicleName;
+            currentVehicleNameEl.textContent = `${vehicleName} (${activeYear})`;
         }
         
         const summaryVehicleNameEl = document.getElementById('summaryVehicleName');
         if (summaryVehicleNameEl) {
-            summaryVehicleNameEl.textContent = vehicleName;
+            summaryVehicleNameEl.textContent = `${vehicleName} (${activeYear})`;
         }
     }
 
     function setupDataListeners() {
         if (!userId || !db) return;
 
-        // 1. Odometer
+        // 1. Odometer (This now fetches based on activeVehicleId AND activeYear)
         fetchOdometerForActiveVehicle();
         
         // 2. Trips (Filtered)
         const tripsCollectionRef = getTripCollectionRef();
+        // We still fetch ALL trips for the vehicle, but we filter by YEAR in memory (client-side)
+        // This avoids complex Firestore composite indexes for every year.
         const q = query(
             tripsCollectionRef, 
             where('vehicleId', '==', activeVehicleId)
@@ -897,8 +928,17 @@
         if (unsubscribeTrips) unsubscribeTrips(); // Clear old listener
 
         unsubscribeTrips = onSnapshot(q, (snapshot) => {
-            const trips = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-            updateTripLogUI(trips);
+            const allTrips = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            
+            // FILTER BY ACTIVE YEAR
+            const filteredTrips = allTrips.filter(t => {
+                // Use local timezone logic to match the input form logic
+                // Or simply check the year of the timestamp
+                const tDate = new Date(t.date);
+                return tDate.getFullYear() === parseInt(activeYear);
+            });
+
+            updateTripLogUI(filteredTrips);
         }, (error) => {
             console.error("Error fetching filtered trips:", error); 
         });
@@ -906,9 +946,30 @@
     
     function handleVehicleChange() {
         const newVehicleId = document.getElementById('vehicleSelect').value;
+        const newYear = document.getElementById('yearSelect').value;
+        
         activeVehicleId = newVehicleId;
+        activeYear = parseInt(newYear);
+        
         updateVehicleNameUI();
         setupDataListeners();
+    }
+
+    function initYearSelect() {
+        const yearSelect = document.getElementById('yearSelect');
+        const currentYear = new Date().getFullYear(); // 2026
+        // Generate options: Current Year - 2 to Current Year + 1
+        const years = [currentYear - 2, currentYear - 1, currentYear, currentYear + 1];
+        
+        years.forEach(year => {
+            const option = document.createElement('option');
+            option.value = year;
+            option.textContent = year;
+            if (year === currentYear) option.selected = true;
+            yearSelect.appendChild(option);
+        });
+        
+        activeYear = parseInt(yearSelect.value);
     }
 
     // --- Modal Logic ---
@@ -979,10 +1040,15 @@
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('tripDate').value = getTodayInMST();
         
+        // Populate Year Dropdown
+        initYearSelect();
+
         // Safety check before running UI updates that depend on DOM
         if (document.getElementById('vehicleSelect')) {
             updateVehicleNameUI();
             document.getElementById('vehicleSelect').addEventListener('change', handleVehicleChange);
+            // Add listener to Year Select too
+            document.getElementById('yearSelect').addEventListener('change', handleVehicleChange);
         }
 
         const tripForm = document.getElementById('trip-form');
